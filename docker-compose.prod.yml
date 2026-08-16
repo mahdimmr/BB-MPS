@@ -1,0 +1,49 @@
+name: bbpms
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      POSTGRES_DB: ${POSTGRES_DB:?}
+    volumes:
+      - bbpms-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    image: ${MIGRATE_IMAGE:?}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?}
+      TZ: ${TZ:-Asia/Tehran}
+      SEED_DATABASE: ${SEED_DATABASE:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    image: ${APP_IMAGE:?}
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?}
+      SESSION_SECRET: ${SESSION_SECRET:?}
+      COMMITTEE_QUORUM: ${COMMITTEE_QUORUM:-2}
+      TZ: ${TZ:-Asia/Tehran}
+      NODE_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  bbpms-pgdata:

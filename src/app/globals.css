@@ -1,0 +1,70 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: var(--font-vazirmatn), "IRANSans", "Shabnam", ui-sans-serif, system-ui,
+    -apple-system, "Segoe UI", sans-serif;
+
+  --color-brand-50: oklch(0.97 0.02 220);
+  --color-brand-100: oklch(0.94 0.04 220);
+  --color-brand-200: oklch(0.88 0.07 220);
+  --color-brand-300: oklch(0.8 0.1 220);
+  --color-brand-400: oklch(0.71 0.13 226);
+  --color-brand-500: oklch(0.62 0.15 231);
+  --color-brand-600: oklch(0.53 0.15 236);
+  --color-brand-700: oklch(0.45 0.13 238);
+  --color-brand-800: oklch(0.37 0.1 240);
+  --color-brand-900: oklch(0.3 0.07 242);
+
+  --color-surface: oklch(0.99 0.003 240);
+  --color-surface-muted: oklch(0.97 0.005 240);
+
+  /* Wisdom (خرد) — data-driven indigo; aliases the brand scale. */
+  --color-wisdom-50: var(--color-brand-50);
+  --color-wisdom-500: var(--color-brand-500);
+  --color-wisdom-600: var(--color-brand-600);
+  --color-wisdom-700: var(--color-brand-700);
+
+  /* Achievement (دستاورد) — measurable emerald/teal. */
+  --color-achievement-50: oklch(0.97 0.03 165);
+  --color-achievement-100: oklch(0.93 0.05 165);
+  --color-achievement-200: oklch(0.87 0.08 165);
+  --color-achievement-500: oklch(0.7 0.15 165);
+  --color-achievement-600: oklch(0.6 0.14 165);
+  --color-achievement-700: oklch(0.5 0.12 165);
+
+  /* Candor (صراحت) — transparent amber. */
+  --color-candor-50: oklch(0.98 0.03 85);
+  --color-candor-100: oklch(0.95 0.05 85);
+  --color-candor-200: oklch(0.9 0.09 85);
+  --color-candor-500: oklch(0.77 0.15 75);
+  --color-candor-600: oklch(0.68 0.15 70);
+  --color-candor-700: oklch(0.55 0.13 60);
+}
+
+:root {
+  color-scheme: light;
+}
+
+html {
+  /* Persian numerals read better with tabular figures in tables and scorecards. */
+  font-feature-settings: "ss02" on;
+}
+
+body {
+  background-color: var(--color-surface);
+  background-image:
+    radial-gradient(1200px 600px at 100% -10%, oklch(0.95 0.03 231 / 0.7), transparent 60%),
+    radial-gradient(900px 500px at 0% 100%, oklch(0.96 0.03 165 / 0.55), transparent 55%);
+  color: oklch(0.28 0.02 250);
+}
+
+/* Persian text needs a little more leading than the Latin default. */
+html[dir="rtl"] body {
+  line-height: 1.85;
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}

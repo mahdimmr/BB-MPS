@@ -1,0 +1,60 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: bbpms-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bbpms
+      POSTGRES_PASSWORD: bbpms
+      POSTGRES_DB: bbpms
+    ports:
+      - "5432:5432"
+    volumes:
+      - bbpms-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bbpms -d bbpms"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    image: ${MIGRATE_IMAGE:-bb-pms-migrate:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: migrate
+    container_name: bbpms-migrate
+    environment:
+      DATABASE_URL: postgresql://bbpms:bbpms@postgres:5432/bbpms?schema=public
+      TZ: Asia/Tehran
+      SEED_DATABASE: ${SEED_DATABASE:-true}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    image: ${APP_IMAGE:-bb-pms-app:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runner
+    container_name: bbpms-app
+    init: true
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://bbpms:bbpms@postgres:5432/bbpms?schema=public
+      SESSION_SECRET: ${SESSION_SECRET:-change-me-in-production-please-use-a-long-random-value}
+      COMMITTEE_QUORUM: ${COMMITTEE_QUORUM:-2}
+      TZ: Asia/Tehran
+      NODE_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  bbpms-pgdata:

@@ -1,0 +1,876 @@
+// BB-PMS — Bimeh Bazar Performance Management System
+// Data model for the 4-month performance cycle described in the organizational handbook.
+
+generator client {
+  provider               = "prisma-client"
+  output                 = "../src/generated/prisma"
+  runtime                = "nodejs"
+  moduleFormat           = "esm"
+  generatedFileExtension = "ts"
+  importFileExtension    = ""
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Identity & org structure
+// ---------------------------------------------------------------------------
+
+/// Capability classes. Org authority over a *specific* employee is decided by
+/// the solidLead / dottedLead relations, not by the role alone.
+enum Role {
+  HR_ADMIN
+  EMPLOYEE
+  SOLID_LEAD
+  DOTTED_LEAD
+  COMMITTEE_MEMBER
+}
+
+enum UserStatus {
+  ACTIVE
+  ON_PIP
+  OFFBOARDING
+  TERMINATED
+  INACTIVE
+}
+
+enum Locale {
+  FA
+  EN
+}
+
+model User {
+  id             String     @id @default(cuid())
+  email          String     @unique
+  employeeNumber String?    @unique
+  passwordHash   String
+  /// Primary (Persian) display name.
+  name           String
+  /// Latin transliteration used when the UI runs in English/LTR.
+  nameEn         String?
+  jobTitle       String?
+  jobTitleEn     String?
+  department     String?
+  roles          Role[]     @default([EMPLOYEE])
+  status         UserStatus @default(ACTIVE)
+  locale         Locale     @default(FA)
+  hireDate       DateTime?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  /// Direct manager with formal authority (approves, grades, leads PIPs).
+  solidLeadId  String?
+  solidLead    User?   @relation("SolidLeadReports", fields: [solidLeadId], references: [id], onDelete: SetNull)
+  solidReports User[]  @relation("SolidLeadReports")
+
+  /// Functional/technical lead with a consultative, advisory role.
+  dottedLeadId  String?
+  dottedLead    User?   @relation("DottedLeadReports", fields: [dottedLeadId], references: [id], onDelete: SetNull)
+  dottedReports User[]  @relation("DottedLeadReports")
+
+  agreements          PerformanceAgreement[]
+  agreementComments   AgreementComment[]
+  amendmentsRequested AgreementAmendment[]   @relation("AmendmentRequestedBy")
+  amendmentsDecided   AgreementAmendment[]   @relation("AmendmentDecidedBy")
+
+  oneToOnesAsEmployee OneToOneMeeting[] @relation("OneToOneEmployee")
+  oneToOnesAsManager  OneToOneMeeting[] @relation("OneToOneManager")
+  actionItemsOwned    ActionItem[]      @relation("ActionItemOwner")
+
+  midTermReviewsConducted MidTermReview[] @relation("MidTermReviewer")
+
+  finalEvaluations        FinalEvaluation[]    @relation("EvaluationSubject")
+  evaluationsConducted    FinalEvaluation[]    @relation("EvaluationManager")
+  multiLevelFeedbackGiven MultiLevelFeedback[] @relation("FeedbackAuthor")
+
+  calibrationSessionsLed    CalibrationSession[]     @relation("CalibrationFacilitator")
+  calibrationParticipations CalibrationParticipant[]
+  calibrationDecisions      CalibrationAdjustment[]  @relation("CalibrationDecidedBy")
+
+  pips             PIP[]             @relation("PipEmployee")
+  pipsLed          PIP[]             @relation("PipOwner")
+  pipsMonitored    PIP[]             @relation("PipHrMonitor")
+  pipOutcomes      PIP[]             @relation("PipOutcomeDecidedBy")
+  pipCoachingLogs  PipCoachingLog[]  @relation("CoachingAuthor")
+  committeeReviews CommitteeReview[] @relation("CommitteeReviewer")
+
+  exitCases          ExitCase[]           @relation("ExitSubject")
+  exitCasesInitiated ExitCase[]           @relation("ExitInitiator")
+  cyclesCreated      PerformanceCycle[]   @relation("CycleCreatedBy")
+  auditLogs          AuditLog[]
+
+  @@index([solidLeadId])
+  @@index([dottedLeadId])
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// Performance cycle (exactly 4 months) & company-level OKRs
+// ---------------------------------------------------------------------------
+
+enum CycleStatus {
+  DRAFT
+  ACTIVE
+  CALIBRATING
+  CLOSED
+}
+
+model PerformanceCycle {
+  id      String @id @default(cuid())
+  /// Jalali-style label, e.g. "1405-Q1".
+  title   String @unique
+  titleEn String?
+
+  startDate DateTime
+  /// Always startDate + 4 months; enforced by the API layer.
+  endDate   DateTime
+  status    CycleStatus @default(DRAFT)
+
+  /// Phase 1 closes here (default: startDate + 1 month).
+  goalSettingDeadline  DateTime
+  /// Phase 3 happens here (default: startDate + 2 months).
+  midTermReviewDate    DateTime
+  /// Phase 4 opens here (default: endDate - 15 days).
+  finalEvaluationStart DateTime
+
+  description String?
+
+  createdById String?
+  createdBy   User?   @relation("CycleCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  companyObjectives   CompanyObjective[]
+  agreements          PerformanceAgreement[]
+  oneToOnes           OneToOneMeeting[]
+  finalEvaluations    FinalEvaluation[]
+  calibrationSessions CalibrationSession[]
+
+  @@index([status])
+  @@index([startDate, endDate])
+}
+
+/// Global company-level OKRs configured by HR; strategic goals cascade from these.
+model CompanyObjective {
+  id          String  @id @default(cuid())
+  cycleId     String
+  cycle       PerformanceCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+  title       String
+  titleEn     String?
+  description String?
+  /// Owning department/team, when the objective is not company-wide.
+  ownerTeam   String?
+  /// [{ title, target, unit }] — key results attached to this objective.
+  keyResults  Json    @default("[]")
+  order       Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  alignedItems AgreementItem[]
+
+  @@index([cycleId])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 1 — Performance agreement (three metric layers)
+// ---------------------------------------------------------------------------
+
+enum AgreementStatus {
+  DRAFT
+  DOTTED_LEAD_REVIEW
+  EMPLOYEE_SIGNED
+  MANAGER_SIGNED
+  APPROVED
+  AMENDMENT_IN_PROGRESS
+  ARCHIVED
+}
+
+enum MetricLayer {
+  /// Stretch targets and contributions to team/company OKRs.
+  STRATEGIC
+  /// KPIs and core recurring responsibilities.
+  OPERATIONAL
+  /// Skills, technical capability and behavioural competencies.
+  DEVELOPMENTAL
+}
+
+enum DevelopmentCategory {
+  TECHNICAL_SKILL
+  BEHAVIORAL_COMPETENCY
+  LEADERSHIP
+  CERTIFICATION
+}
+
+model PerformanceAgreement {
+  id      String @id @default(cuid())
+  userId  String
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cycleId String
+  cycle   PerformanceCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+
+  status  AgreementStatus @default(DRAFT)
+  /// Bumped on every approved amendment so history stays auditable.
+  version Int             @default(1)
+
+  submittedAt        DateTime?
+  dottedLeadReviewAt DateTime?
+  employeeSignedAt   DateTime?
+  managerSignedAt    DateTime?
+  approvedAt         DateTime?
+  /// Set when the solid lead approves; edits then require an amendment.
+  lockedAt           DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items         AgreementItem[]
+  comments      AgreementComment[]
+  amendments    AgreementAmendment[]
+  midTermReview MidTermReview?
+  evaluation    FinalEvaluation?
+
+  @@unique([userId, cycleId])
+  @@index([cycleId, status])
+}
+
+model AgreementItem {
+  id          String      @id @default(cuid())
+  agreementId String
+  agreement   PerformanceAgreement @relation(fields: [agreementId], references: [id], onDelete: Cascade)
+
+  layer       MetricLayer
+  title       String
+  titleEn     String?
+  description String?
+
+  /// Relative contribution to the final score; all items must total 100.
+  weight Int @default(0)
+
+  /// How success is measured (target value + method), e.g. "۹۵٪ SLA".
+  targetValue       String?
+  measurementMethod String?
+  dueDate           DateTime?
+
+  /// STRATEGIC only: stretch goals carry upside but no downside penalty.
+  isStretch Boolean @default(false)
+  /// STRATEGIC only: link to the company OKR this goal rolls up to.
+  companyObjectiveId String?
+  companyObjective   CompanyObjective? @relation(fields: [companyObjectiveId], references: [id], onDelete: SetNull)
+
+  /// DEVELOPMENTAL only: what kind of growth this item represents.
+  developmentCategory DevelopmentCategory?
+
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  comments AgreementComment[]
+  scores   EvaluationItemScore[]
+
+  @@index([agreementId, layer])
+  @@index([companyObjectiveId])
+}
+
+enum CommentType {
+  SUGGESTION
+  ENDORSEMENT
+  OBJECTION
+  QUESTION
+}
+
+/// Threaded input during goal setting — this is the dotted lead's consultation surface.
+model AgreementComment {
+  id          String  @id @default(cuid())
+  agreementId String
+  agreement   PerformanceAgreement @relation(fields: [agreementId], references: [id], onDelete: Cascade)
+  itemId      String?
+  item        AgreementItem? @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  authorId String
+  author   User   @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  type       CommentType @default(SUGGESTION)
+  body       String
+  resolvedAt DateTime?
+  createdAt  DateTime    @default(now())
+
+  @@index([agreementId])
+  @@index([itemId])
+}
+
+enum AmendmentStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+/// Controlled edits to a locked agreement (Phase 3 "Amendment Needed" path).
+model AgreementAmendment {
+  id          String @id @default(cuid())
+  agreementId String
+  agreement   PerformanceAgreement @relation(fields: [agreementId], references: [id], onDelete: Cascade)
+
+  midTermReviewId String?
+  midTermReview   MidTermReview? @relation(fields: [midTermReviewId], references: [id], onDelete: SetNull)
+
+  requestedById String
+  requestedBy   User   @relation("AmendmentRequestedBy", fields: [requestedById], references: [id], onDelete: Cascade)
+
+  reason String
+  /// Snapshot of the items before/after the amendment.
+  before Json?
+  after  Json?
+
+  status      AmendmentStatus @default(PENDING)
+  decidedById String?
+  decidedBy   User?           @relation("AmendmentDecidedBy", fields: [decidedById], references: [id], onDelete: SetNull)
+  decidedAt   DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([agreementId, status])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 — Continuous 1:1 discussions
+// ---------------------------------------------------------------------------
+
+enum MeetingStatus {
+  SCHEDULED
+  COMPLETED
+  CANCELLED
+}
+
+model OneToOneMeeting {
+  id         String @id @default(cuid())
+  employeeId String
+  employee   User   @relation("OneToOneEmployee", fields: [employeeId], references: [id], onDelete: Cascade)
+  managerId  String
+  manager    User   @relation("OneToOneManager", fields: [managerId], references: [id], onDelete: Cascade)
+
+  cycleId String?
+  cycle   PerformanceCycle? @relation(fields: [cycleId], references: [id], onDelete: SetNull)
+
+  scheduledFor DateTime
+  completedAt  DateTime?
+  status       MeetingStatus @default(SCHEDULED)
+
+  /// "What went well?"
+  wentWell         String?
+  /// "Roadblocks"
+  roadblocks       String?
+  /// Free-form agenda / discussion notes.
+  discussionPoints String?
+  /// Set when this check-in is part of a PIP coaching cadence.
+  pipId            String?
+  pip              PIP?    @relation(fields: [pipId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  actionItems ActionItem[]
+
+  @@index([employeeId, scheduledFor])
+  @@index([managerId, status])
+  @@index([cycleId])
+}
+
+enum ActionItemStatus {
+  OPEN
+  IN_PROGRESS
+  DONE
+  CANCELLED
+}
+
+model ActionItem {
+  id        String @id @default(cuid())
+  meetingId String
+  meeting   OneToOneMeeting @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+
+  ownerId String?
+  owner   User?   @relation("ActionItemOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+
+  title       String
+  dueDate     DateTime?
+  status      ActionItemStatus @default(OPEN)
+  completedAt DateTime?
+  createdAt   DateTime         @default(now())
+
+  @@index([meetingId])
+  @@index([ownerId, status])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 — Mid-term review
+// ---------------------------------------------------------------------------
+
+enum MidTermStatus {
+  ON_TRACK
+  AMENDMENT_NEEDED
+  PERFORMANCE_RISK
+}
+
+enum RiskAction {
+  CONTINUE
+  AMENDMENT
+  PIP
+  OFFBOARDING
+}
+
+model MidTermReview {
+  id          String @id @default(cuid())
+  agreementId String @unique
+  agreement   PerformanceAgreement @relation(fields: [agreementId], references: [id], onDelete: Cascade)
+
+  reviewerId String
+  reviewer   User   @relation("MidTermReviewer", fields: [reviewerId], references: [id], onDelete: Cascade)
+
+  reviewDate   DateTime
+  status       MidTermStatus
+  feedbackText String
+  riskAction   RiskAction?
+  /// Advisory technical input captured from the dotted lead.
+  dottedLeadInput String?
+
+  /// A performance risk may never be a surprise: the employee has to see it.
+  acknowledgedAt      DateTime?
+  employeeResponse    String?
+  /// 1:1 meetings referenced as evidence that concerns were raised earlier.
+  evidenceMeetingIds  String[] @default([])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  amendments AgreementAmendment[]
+  pip        PIP?
+
+  @@index([reviewerId])
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4 — Final evaluation, multi-level feedback & calibration
+// ---------------------------------------------------------------------------
+
+enum FinalEvaluationStatus {
+  DRAFT
+  SELF_EVALUATED
+  SOLID_LEAD_EVALUATED
+  MULTI_LEVEL_COMPLETED
+  CALIBRATED
+  SHARED_WITH_EMPLOYEE
+}
+
+enum Score {
+  OUTSTANDING
+  ABOVE_EXPECTATIONS
+  MEETS_EXPECTATIONS
+  NEEDS_IMPROVEMENT
+  POOR
+}
+
+model FinalEvaluation {
+  id         String @id @default(cuid())
+  employeeId String
+  employee   User   @relation("EvaluationSubject", fields: [employeeId], references: [id], onDelete: Cascade)
+  cycleId    String
+  cycle      PerformanceCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+
+  agreementId String?               @unique
+  agreement   PerformanceAgreement? @relation(fields: [agreementId], references: [id], onDelete: SetNull)
+
+  status FinalEvaluationStatus @default(DRAFT)
+
+  // Step 1 — self evaluation (narrative)
+  selfAchievements String?
+  selfChallenges   String?
+  selfGrowth       String?
+  selfSubmittedAt  DateTime?
+
+  // Step 2 — solid lead evaluation across the three agreement layers
+  evaluatedById      String?
+  evaluatedBy        User?     @relation("EvaluationManager", fields: [evaluatedById], references: [id], onDelete: SetNull)
+  strategicScore     Score?
+  operationalScore   Score?
+  developmentalScore Score?
+  proposedScore      Score?
+  managerFeedback    String?
+  strengths          String?
+  developmentAreas   String?
+  managerSubmittedAt DateTime?
+
+  // Step 4 — calibration committee
+  calibrationSessionId String?
+  calibrationSession   CalibrationSession? @relation(fields: [calibrationSessionId], references: [id], onDelete: SetNull)
+  calibratedScore      Score?
+  calibrationNotes     String?
+  calibratedAt         DateTime?
+
+  // Step 5 — sharing the final packet
+  sharedAt               DateTime?
+  employeeAcknowledgedAt DateTime?
+  employeeComment        String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  itemScores  EvaluationItemScore[]
+  feedbacks   MultiLevelFeedback[]
+  adjustments CalibrationAdjustment[]
+  pip         PIP?
+  exitCases   ExitCase[]
+
+  @@unique([employeeId, cycleId])
+  @@index([cycleId, status])
+  @@index([calibrationSessionId])
+}
+
+/// Per-goal grading so a rating can always be traced back to agreed metrics.
+model EvaluationItemScore {
+  id              String @id @default(cuid())
+  evaluationId    String
+  evaluation      FinalEvaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+  agreementItemId String
+  agreementItem   AgreementItem   @relation(fields: [agreementItemId], references: [id], onDelete: Cascade)
+
+  score              Score
+  achievementPercent Int?
+  comment            String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([evaluationId, agreementItemId])
+  @@index([evaluationId])
+}
+
+enum FeedbackRelationship {
+  DOTTED_LEAD
+  CROSS_TEAM_STAKEHOLDER
+  PEER
+  PROJECT_LEAD
+  INTERNAL_CUSTOMER
+}
+
+enum FeedbackVisibility {
+  HR_ONLY
+  MANAGER_AND_HR
+  SHARED_WITH_EMPLOYEE
+}
+
+/// Step 3 — advisory matrix input (dotted leads and cross-team stakeholders).
+model MultiLevelFeedback {
+  id           String @id @default(cuid())
+  evaluationId String
+  evaluation   FinalEvaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+
+  authorId String
+  author   User   @relation("FeedbackAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+
+  relationship        FeedbackRelationship
+  projectContext      String?
+  technicalFeedback   String?
+  collaborationFeedback String?
+  suggestedScore      Score?
+  visibility          FeedbackVisibility   @default(MANAGER_AND_HR)
+  submittedAt         DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([evaluationId, authorId])
+  @@index([evaluationId])
+}
+
+enum CalibrationStatus {
+  SCHEDULED
+  IN_PROGRESS
+  COMPLETED
+}
+
+model CalibrationSession {
+  id      String @id @default(cuid())
+  cycleId String
+  cycle   PerformanceCycle @relation(fields: [cycleId], references: [id], onDelete: Cascade)
+
+  title         String
+  status        CalibrationStatus @default(SCHEDULED)
+  scheduledFor  DateTime
+  startedAt     DateTime?
+  completedAt   DateTime?
+  facilitatorId String?
+  facilitator   User?             @relation("CalibrationFacilitator", fields: [facilitatorId], references: [id], onDelete: SetNull)
+  notes         String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  participants CalibrationParticipant[]
+  evaluations  FinalEvaluation[]
+  adjustments  CalibrationAdjustment[]
+
+  @@index([cycleId, status])
+}
+
+model CalibrationParticipant {
+  id        String @id @default(cuid())
+  sessionId String
+  session   CalibrationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  attended Boolean @default(false)
+
+  @@unique([sessionId, userId])
+}
+
+/// Immutable trail of every rating change made in committee.
+model CalibrationAdjustment {
+  id           String @id @default(cuid())
+  sessionId    String?
+  session      CalibrationSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  evaluationId String
+  evaluation   FinalEvaluation     @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+
+  fromScore   Score?
+  toScore     Score
+  rationale   String
+  decidedById String
+  decidedBy   User   @relation("CalibrationDecidedBy", fields: [decidedById], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([evaluationId])
+  @@index([sessionId])
+}
+
+// ---------------------------------------------------------------------------
+// Consequence management — PIP, committee review, exit
+// ---------------------------------------------------------------------------
+
+enum PipStatus {
+  PENDING_COMMITTEE
+  REJECTED_BY_COMMITTEE
+  ACTIVE
+  SUCCESS_RETURNED
+  FAILED_TERMINATED
+  CANCELLED
+}
+
+enum PipTrigger {
+  MID_TERM_RISK
+  FINAL_NEEDS_IMPROVEMENT
+  MANAGER_INITIATED
+}
+
+model PIP {
+  id         String @id @default(cuid())
+  employeeId String
+  employee   User   @relation("PipEmployee", fields: [employeeId], references: [id], onDelete: Cascade)
+
+  /// A PIP originates either from a mid-term risk flag or a final rating.
+  evaluationId    String?          @unique
+  evaluation      FinalEvaluation? @relation(fields: [evaluationId], references: [id], onDelete: SetNull)
+  midTermReviewId String?          @unique
+  midTermReview   MidTermReview?   @relation(fields: [midTermReviewId], references: [id], onDelete: SetNull)
+
+  trigger PipTrigger
+  status  PipStatus  @default(PENDING_COMMITTEE)
+
+  /// Handbook allows a 1 or 2 month plan.
+  durationMonths Int
+  startDate      DateTime?
+  endDate        DateTime?
+
+  gapDescription  String
+  successCriteria String?
+  supportProvided String?
+
+  /// Solid lead leading the plan.
+  ownerId String
+  owner   User   @relation("PipOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  /// HR monitor.
+  hrMonitorId String?
+  hrMonitor   User?   @relation("PipHrMonitor", fields: [hrMonitorId], references: [id], onDelete: SetNull)
+
+  committeeApprovedAt DateTime?
+  outcomeDecidedAt    DateTime?
+  outcomeById         String?
+  outcomeBy           User?     @relation("PipOutcomeDecidedBy", fields: [outcomeById], references: [id], onDelete: SetNull)
+  outcomeNotes        String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  objectives       PipObjective[]
+  coachingLogs     PipCoachingLog[]
+  committeeReviews CommitteeReview[]
+  checkInMeetings  OneToOneMeeting[]
+  exitCases        ExitCase[]
+
+  @@index([employeeId, status])
+  @@index([status])
+}
+
+enum PipObjectiveStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  ACHIEVED
+  MISSED
+}
+
+model PipObjective {
+  id    String @id @default(cuid())
+  pipId String
+  pip   PIP    @relation(fields: [pipId], references: [id], onDelete: Cascade)
+
+  title             String
+  successMeasure    String?
+  dueDate           DateTime?
+  status            PipObjectiveStatus @default(NOT_STARTED)
+  progressPercent   Int                @default(0)
+  order             Int                @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([pipId])
+}
+
+model PipCoachingLog {
+  id    String @id @default(cuid())
+  pipId String
+  pip   PIP    @relation(fields: [pipId], references: [id], onDelete: Cascade)
+
+  authorId String
+  author   User   @relation("CoachingAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+
+  checkInDate     DateTime
+  progressNotes   String
+  blockers        String?
+  supportGiven    String?
+  employeeComment String?
+  /// -1 declining, 0 flat, 1 improving.
+  trend           Int?
+
+  createdAt DateTime @default(now())
+
+  @@index([pipId, checkInDate])
+}
+
+enum CommitteeReviewType {
+  PIP_APPROVAL
+  PIP_OUTCOME
+  TERMINATION_APPROVAL
+  CALIBRATION_APPEAL
+}
+
+enum CommitteeDecision {
+  APPROVE
+  REJECT
+  REQUEST_CHANGES
+  ABSTAIN
+}
+
+/// Independent committee votes; a PIP or exit needs quorum before it proceeds.
+model CommitteeReview {
+  id   String              @id @default(cuid())
+  type CommitteeReviewType
+
+  pipId      String?
+  pip        PIP?      @relation(fields: [pipId], references: [id], onDelete: Cascade)
+  exitCaseId String?
+  exitCase   ExitCase? @relation(fields: [exitCaseId], references: [id], onDelete: Cascade)
+
+  reviewerId String
+  reviewer   User   @relation("CommitteeReviewer", fields: [reviewerId], references: [id], onDelete: Cascade)
+
+  decision  CommitteeDecision?
+  rationale String?
+  decidedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@unique([type, pipId, reviewerId])
+  @@unique([type, exitCaseId, reviewerId])
+  @@index([pipId])
+  @@index([exitCaseId])
+}
+
+enum ExitTrigger {
+  POOR_RATING
+  PIP_FAILED
+  VOLUNTARY
+  OTHER
+}
+
+enum ExitStatus {
+  EVIDENCE_REVIEW
+  PENDING_COMMITTEE
+  APPROVED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+/// Off-boarding case. Cannot leave EVIDENCE_REVIEW until a documented history of
+/// warnings/conversations exists — no surprise terminations.
+model ExitCase {
+  id         String @id @default(cuid())
+  employeeId String
+  employee   User   @relation("ExitSubject", fields: [employeeId], references: [id], onDelete: Cascade)
+
+  trigger ExitTrigger
+  status  ExitStatus  @default(EVIDENCE_REVIEW)
+
+  evaluationId String?
+  evaluation   FinalEvaluation? @relation(fields: [evaluationId], references: [id], onDelete: SetNull)
+  pipId        String?
+  pip          PIP?             @relation(fields: [pipId], references: [id], onDelete: SetNull)
+
+  /// { midTermWarning, oneToOneCount, pipCompleted, sharedFeedback } — the gate
+  /// the UI renders before termination can be requested.
+  evidenceChecklist Json    @default("{}")
+  rationale         String?
+
+  initiatedById String
+  initiatedBy   User   @relation("ExitInitiator", fields: [initiatedById], references: [id], onDelete: Cascade)
+
+  approvedAt     DateTime?
+  lastWorkingDay DateTime?
+  completedAt    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  committeeReviews CommitteeReview[]
+
+  @@index([employeeId, status])
+}
+
+// ---------------------------------------------------------------------------
+// Audit
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id      String  @id @default(cuid())
+  actorId String?
+  actor   User?   @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  action     String
+  entityType String
+  entityId   String
+  before     Json?
+  after      Json?
+  ipAddress  String?
+  userAgent  String?
+
+  createdAt DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId, createdAt])
+}
