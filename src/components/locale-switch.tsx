@@ -1,15 +1,16 @@
-import { setLocaleAction } from "@/app/actions/locale";
+"use client";
+
 import { LOCALES, type AppLocale } from "@/lib/i18n/config";
 import { cn } from "@/lib/utils";
 
-/// Direction switching happens on the server: the cookie drives `dir` on <html>,
-/// so the layout flips without any client-side hydration.
 export function LocaleSwitch({
   locale,
   labels,
+  onChange,
 }: {
   locale: AppLocale;
   labels: Record<AppLocale, string>;
+  onChange: (locale: AppLocale) => void;
 }) {
   return (
     <div
@@ -17,18 +18,18 @@ export function LocaleSwitch({
       role="group"
     >
       {LOCALES.map((option) => (
-        <form key={option} action={setLocaleAction.bind(null, option)}>
-          <button
-            type="submit"
-            aria-pressed={option === locale}
-            className={cn(
-              "rounded-full px-3 py-1 text-xs font-medium transition-colors",
-              option === locale ? "bg-brand-600 text-white" : "text-slate-600 hover:bg-slate-100",
-            )}
-          >
-            {labels[option]}
-          </button>
-        </form>
+        <button
+          key={option}
+          type="button"
+          aria-pressed={option === locale}
+          onClick={() => onChange(option)}
+          className={cn(
+            "rounded-full px-3 py-1 text-xs font-medium transition-colors",
+            option === locale ? "bg-brand-600 text-white" : "text-slate-600 hover:bg-slate-100",
+          )}
+        >
+          {labels[option]}
+        </button>
       ))}
     </div>
   );

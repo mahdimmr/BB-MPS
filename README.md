@@ -31,6 +31,16 @@ npm run docker:up             # build, migrate, seed, then serve on http://local
 
 Stop with `npm run docker:down`. Follow app logs with `npm run docker:logs`.
 
+## GitHub Pages
+
+The interactive UI demo is published as a static site (no API or database) at:
+
+**https://mahdimmr.github.io/BB-MPS/**
+
+GitHub only serves the site root `https://mahdimmr.github.io/` from a repository named `mahdimmr.github.io`. This project lives in `BB-MPS`, so Pages uses the `/BB-MPS/` path. The demo is the client-side handbook UI; login APIs stay on Docker.
+
+A push to `main` runs `.github/workflows/pages.yml`. In the repo, set **Settings → Pages → Source** to **GitHub Actions**. If the repository is private, GitHub Pages needs a public repo or GitHub Pro.
+
 ## Production deploy (GitHub Actions)
 
 Pushes to `main` (and manual **Run workflow**) build `linux/amd64` images, publish them to GitHub Container Registry, then SSH to the server and run `scripts/deploy.sh` (pull → migrate → recreate app). Pull requests only build the images; they are not pushed or deployed. Production never seeds demo accounts.

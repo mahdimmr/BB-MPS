@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import { Vazirmatn } from "next/font/google";
 
-import { getTranslations } from "@/lib/i18n/server";
+import { fa } from "@/lib/i18n/dictionaries/fa";
+import { DEFAULT_LOCALE, directionOf } from "@/lib/i18n/config";
 
 import "./globals.css";
 
@@ -13,20 +14,14 @@ const vazirmatn = Vazirmatn({
   display: "swap",
 });
 
-export async function generateMetadata(): Promise<Metadata> {
-  const { t } = await getTranslations();
+export const metadata: Metadata = {
+  title: `${fa.app.shortName} — ${fa.app.name}`,
+  description: fa.app.tagline,
+};
 
-  return {
-    title: `${t.app.shortName} — ${t.app.name}`,
-    description: t.app.tagline,
-  };
-}
-
-export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const { locale, dir } = await getTranslations();
-
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang={locale} dir={dir} className={vazirmatn.variable}>
+    <html lang={DEFAULT_LOCALE} dir={directionOf(DEFAULT_LOCALE)} className={vazirmatn.variable}>
       <body className="min-h-screen font-sans antialiased">{children}</body>
     </html>
   );

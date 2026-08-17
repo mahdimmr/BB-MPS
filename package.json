@@ -6,7 +6,7 @@
   "description": "BB-PMS — Bimeh Bazar Performance Management System",
   "scripts": {
     "dev": "next dev",
-    "build": "prisma generate && next build",
+    "build:pages": "bash scripts/build-pages.sh",
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
