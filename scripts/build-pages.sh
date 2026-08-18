@@ -20,5 +20,9 @@ if [ -d src/app/actions ]; then mv src/app/actions "$STASH/actions"; fi
 
 rm -rf .next
 
+# CI does not have src/generated; Next's typecheck still sees server files.
+export DATABASE_URL="${DATABASE_URL:-postgresql://build:build@127.0.0.1:5432/build?schema=public}"
+npx prisma generate
+
 export GITHUB_PAGES=true
 npx next build
